@@ -6,6 +6,13 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Log if API key is loaded
+if (!process.env.OPENAI_API_KEY) {
+  console.error("❌ OPENAI_API_KEY is missing!");
+} else {
+  console.log("✅ OPENAI_API_KEY loaded successfully");
+}
+
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 app.get("/", (req, res) => {
@@ -15,6 +22,11 @@ app.get("/", (req, res) => {
 app.post("/chat", async (req, res) => {
   try {
     const { prompt } = req.body;
+
+    if (!prompt) {
+      return res.status(400).json({ error: "Prompt is required" });
+    }
+
     const completion = await openai.chat.completions.create({
       model: "gpt-3.5-turbo",
       messages: [
@@ -22,9 +34,10 @@ app.post("/chat", async (req, res) => {
         { role: "user", content: prompt }
       ]
     });
+
     res.json({ reply: completion.choices[0].message.content });
   } catch (err) {
-    console.error(err);
+    console.error("🔥 Error during OpenAI call:", err?.response?.data || err.message || err);
     res.status(500).json({ error: "Server error" });
   }
 });
