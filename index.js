@@ -6,19 +6,22 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Log if API key is loaded
+// ✅ API Key Check
 if (!process.env.OPENAI_API_KEY) {
   console.error("❌ OPENAI_API_KEY is missing!");
 } else {
   console.log("✅ OPENAI_API_KEY loaded successfully");
 }
 
+// ✅ Initialize OpenAI client
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+// ✅ Health Check Route
 app.get("/", (req, res) => {
   res.send("✅ Travel Chat API is running");
 });
 
+// ✅ Chat Endpoint
 app.post("/chat", async (req, res) => {
   try {
     const { prompt } = req.body;
@@ -30,11 +33,15 @@ app.post("/chat", async (req, res) => {
     const completion = await openai.chat.completions.create({
       model: "gpt-4.1-nano",
       messages: [
-        { role: "system", content: "You are a helpful AI travel assistant." },
+        {
+          role: "system",
+          content:
+            "You are a concise and practical AI travel assistant. Respond clearly and briefly. Avoid repeating general travel facts unless asked."
+        },
         { role: "user", content: prompt }
       ],
-      temperature: 0.5,     // ⚙️ Balanced creativity
-      max_tokens: 500       // 🧠 Cap response length
+      temperature: 0.5,      // Balanced creativity
+      max_tokens: 500        // Limit response length
     });
 
     res.json({ reply: completion.choices[0].message.content });
@@ -44,6 +51,7 @@ app.post("/chat", async (req, res) => {
   }
 });
 
+// ✅ Server Start
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`✅ Travel bot API running on port ${PORT}`);
