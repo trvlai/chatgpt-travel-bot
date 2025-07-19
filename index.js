@@ -32,7 +32,9 @@ app.post("/chat", async (req, res) => {
       messages: [
         { role: "system", content: "You are a helpful AI travel assistant." },
         { role: "user", content: prompt }
-      ]
+      ],
+      temperature: 0.5,     // ⚙️ Balanced creativity
+      max_tokens: 500       // 🧠 Cap response length
     });
 
     res.json({ reply: completion.choices[0].message.content });
