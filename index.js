@@ -6,53 +6,66 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ✅ API Key Check
+// ✅ In-memory session store (replace with Redis/DB for production)
+const sessionStore = {};
+
+// Load API Key
 if (!process.env.OPENAI_API_KEY) {
   console.error("❌ OPENAI_API_KEY is missing!");
 } else {
-  console.log("✅ OPENAI_API_KEY loaded successfully");
+  console.log("✅ OPENAI_API_KEY loaded");
 }
 
-// ✅ Initialize OpenAI client
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// ✅ Health Check Route
 app.get("/", (req, res) => {
   res.send("✅ Travel Chat API is running");
 });
 
-// ✅ Chat Endpoint
 app.post("/chat", async (req, res) => {
-  try {
-    const { prompt } = req.body;
+  const { prompt, sessionId } = req.body;
 
-    if (!prompt) {
-      return res.status(400).json({ error: "Prompt is required" });
-    }
+  if (!prompt || !sessionId) {
+    return res.status(400).json({ error: "Missing prompt or sessionId" });
+  }
 
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4.1-nano",
-      messages: [
+  // Create session if it doesn't exist
+  if (!sessionStore[sessionId]) {
+    sessionStore[sessionId] = {
+      history: [
         {
           role: "system",
-          content:
-            "You are a concise and practical AI travel assistant. Respond clearly and briefly. Avoid repeating general travel facts unless asked."
-        },
-        { role: "user", content: prompt }
-      ],
-      temperature: 0.5,      // Balanced creativity
-      max_tokens: 500        // Limit response length
+          content: "You are a helpful AI assistant that helps users book flights. Collect destination, travel dates or date range, and duration. Ask only for what’s missing."
+        }
+      ]
+    };
+  }
+
+  const session = sessionStore[sessionId];
+  session.history.push({ role: "user", content: prompt });
+
+  // Optional: limit history for token budget
+  const recentMessages = session.history.slice(-10);
+
+  try {
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4.1-nano",
+      messages: recentMessages,
+      temperature: 0.4,
+      max_tokens: 300
     });
 
-    res.json({ reply: completion.choices[0].message.content });
+    const reply = completion.choices[0].message.content;
+    session.history.push({ role: "assistant", content: reply });
+
+    res.json({ reply });
   } catch (err) {
-    console.error("🔥 Error during OpenAI call:", err?.response?.data || err.message || err);
-    res.status(500).json({ error: "Server error" });
+    console.error("🔥 OpenAI error:", err?.response?.data || err.message || err);
+    res.status(500).json({ error: "AI request failed" });
   }
 });
 
-// ✅ Server Start
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-  console.log(`✅ Travel bot API running on port ${PORT}`);
+  console.log(`🚀 API running on port ${PORT}`);
 });
