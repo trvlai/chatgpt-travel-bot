@@ -35,7 +35,7 @@ app.post("/chat", async (req, res) => {
       history: [
         {
           role: "system",
-          content: "You are a helpful AI assistant that helps users book flights. Collect destination, travel dates or date range, and duration. Ask only for what’s missing."
+          content: "You are a helpful AI assistant that helps users book flights. Collect the departure city, destination, travel dates (or a date range), and trip duration. Start by asking for both the departure and destination cities together. Then continue asking only for the missing details."
         }
       ]
     };
