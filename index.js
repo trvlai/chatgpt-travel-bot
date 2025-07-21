@@ -12,6 +12,7 @@ app.use(express.json());
 // In-memory session store
 const sessionStore = {};
 
+// --- Helper: Extract flight info (city names, date) ---
 function extractFlightInfo(text, sessionFlightSearch = {}) {
   let cityMatch = text.match(/from\s+([a-zA-Z\s]+?)\s+to\s+([a-zA-Z\s]+?)(?:\s|$)/i);
   let from = cityMatch?.[1]?.trim() || null;
@@ -38,6 +39,25 @@ function extractFlightInfo(text, sessionFlightSearch = {}) {
   const date = parsedDates.length ? parsedDates[0].start.date().toISOString().split("T")[0] : null;
   return { from, to, date };
 }
+
+// Simple map for demo: city name -> Skyscanner code
+// In production, use a full lookup or API (see Skyscanner docs or endpoints!)
+const cityToSkyId = city => {
+  const lookup = {
+    london: "LOND",
+    paris: "PARI",
+    rome: "ROME",
+    dubai: "DXBA",
+    newyork: "NYCA",
+    madrid: "MADR",
+    barcelona: "BCN",
+    tokyo: "TYOA"
+    // ...expand as needed
+  };
+  if (!city) return null;
+  // Try exact match (case-insensitive, spaces removed)
+  return lookup[city.toLowerCase().replace(/\s/g, "")] || null;
+};
 
 app.get("/", (req, res) => {
   res.send("✅ Travel Chat API is running");
@@ -92,46 +112,43 @@ Avoid sounding robotic. Keep a helpful tone, like a smart and friendly concierge
     return res.json({ reply });
   }
 
-  // Use city names for Kiwi API!
-  const fromCity = from;
-  const toCity = to;
+  // --- Fly Scraper: city name -> Skyscanner code
+  const fromSkyId = cityToSkyId(from);
+  const toSkyId = cityToSkyId(to);
 
-  console.log("[Kiwi flight search]", { fromCity, toCity, date });
+  if (!fromSkyId || !toSkyId) {
+    const msg = `Sorry, I couldn't identify the airport/city codes for "${from}" or "${to}". Try major cities (London, Paris, Rome, etc).`;
+    session.history.push({ role: "assistant", content: msg });
+    return res.json({ reply: msg });
+  }
+
+  console.log("[Fly Scraper flight search]", { fromSkyId, toSkyId, date });
 
   try {
-    const response = await axios.get("https://kiwi-com-cheap-flights.p.rapidapi.com/one-way", {
+    const response = await axios.get("https://fly-scraper.p.rapidapi.com/flights/search-one-way", {
       params: {
-        source: `City:${fromCity}`,
-        destination: `City:${toCity}`,
-        outbound: date,
-        currency: "usd",
-        locale: "en",
-        adults: 1,
-        cabinClass: "ECONOMY",
-        sortBy: "QUALITY",
-        limit: 3,
-        contentProviders: "KIWI"
+        originSkyId: fromSkyId,
+        destinationSkyId: toSkyId,
+        departureDate: date,
+        adults: "1"
       },
       headers: {
-        "X-RapidAPI-Key": process.env.KIWI_API_KEY,
-        "X-RapidAPI-Host": "kiwi-com-cheap-flights.p.rapidapi.com"
+        "x-rapidapi-key": process.env.RAPIDAPI_KEY, // set RAPIDAPI_KEY in .env
+        "x-rapidapi-host": "fly-scraper.p.rapidapi.com"
       }
     });
 
-    // Only log plain objects!
-    console.log("[Kiwi API response]", JSON.stringify(response.data, null, 2));
-
-    const flights = response.data?.data || [];
-    if (!flights.length) {
-      // Don't reset state on failure — let user refine query (only reset on success)
+    const itineraries = response.data?.data?.itineraries || [];
+    if (!itineraries.length) {
       return res.json({ reply: `😢 Sorry, I couldn't find any flights from ${from} to ${to} on ${date}.` });
     }
 
-    const reply = flights.map(flight => {
-      const airline = flight.airlines?.[0] || "Unknown airline";
-      const price = flight.price?.amount || "N/A";
-      const depTime = new Date(flight.local_departure).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      return `✈️ ${airline} — Departs at ${depTime}, $${price}`;
+    // Format top 3 flight options
+    const reply = itineraries.slice(0, 3).map(flight => {
+      const price = flight.price?.raw || "N/A";
+      const dep = flight.legs?.[0]?.departureTime || "";
+      const arr = flight.legs?.[0]?.arrivalTime || "";
+      return `✈️ $${price} | Departure: ${dep} → Arrival: ${arr}`;
     }).join("\n");
 
     // Reset search on success
@@ -139,7 +156,7 @@ Avoid sounding robotic. Keep a helpful tone, like a smart and friendly concierge
     session.history.push({ role: "assistant", content: reply });
     return res.json({ reply });
   } catch (err) {
-    console.error("🔥 Kiwi API error:", err.response?.data || err.message || err);
+    console.error("🔥 Fly Scraper API error:", err.response?.data || err.message || err);
     return res.status(500).json({ error: "Flight search failed" });
   }
 });
