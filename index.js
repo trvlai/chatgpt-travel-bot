@@ -3,7 +3,6 @@ const cors = require("cors");
 const OpenAI = require("openai");
 const axios = require("axios");
 const chrono = require("chrono-node");
-const airports = require("iata-airports"); // <-- Make sure you `npm install iata-airports`
 require("dotenv").config();
 
 const app = express();
@@ -13,25 +12,6 @@ app.use(express.json());
 // In-memory session store
 const sessionStore = {};
 
-// IATA city/airport lookup (Kiwi expects codes, not city names)
-function cityToIATA(cityName) {
-  if (!cityName) return null;
-  // Try to find a "city" type code
-  let match = airports.find(
-    a => a.city && a.city.toLowerCase() === cityName.toLowerCase() && a.iata_type === "city"
-  );
-  if (match) return match.iata;
-  // Fallback: try airport in city
-  match = airports.find(
-    a => a.city && a.city.toLowerCase() === cityName.toLowerCase()
-  );
-  if (match) return match.iata;
-  // Fallback: accept exact code
-  if (/^[A-Z]{3}$/.test(cityName.trim().toUpperCase())) return cityName.trim().toUpperCase();
-  return null;
-}
-
-// Robust city/date extractor
 function extractFlightInfo(text, sessionFlightSearch = {}) {
   let cityMatch = text.match(/from\s+([a-zA-Z\s]+?)\s+to\s+([a-zA-Z\s]+?)(?:\s|$)/i);
   let from = cityMatch?.[1]?.trim() || null;
@@ -112,23 +92,17 @@ Avoid sounding robotic. Keep a helpful tone, like a smart and friendly concierge
     return res.json({ reply });
   }
 
-  // Use IATA codes!
-  const fromIATA = cityToIATA(from);
-  const toIATA = cityToIATA(to);
-  if (!fromIATA || !toIATA) {
-    const msg = `Sorry, I couldn't identify the airport codes for "${from}" or "${to}". Please try using major cities (e.g., "London" or "Dubai").`;
-    session.history.push({ role: "assistant", content: msg });
-    return res.json({ reply: msg });
-  }
+  // Use city names for Kiwi API!
+  const fromCity = from;
+  const toCity = to;
 
-  console.log("[Kiwi flight search]", { fromIATA, toIATA, date });
+  console.log("[Kiwi flight search]", { fromCity, toCity, date });
 
   try {
-    // Official Kiwi docs require source/destination as IATA code!
     const response = await axios.get("https://kiwi-com-cheap-flights.p.rapidapi.com/one-way", {
       params: {
-        source: fromIATA,
-        destination: toIATA,
+        source: `City:${fromCity}`,
+        destination: `City:${toCity}`,
         outbound: date,
         currency: "usd",
         locale: "en",
@@ -174,4 +148,3 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`🚀 API running on port ${PORT}`);
 });
-
