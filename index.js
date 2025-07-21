@@ -9,10 +9,10 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ✅ In-memory session store (replace with Redis/DB for production)
+// In-memory session store
 const sessionStore = {};
 
-// ✅ Load API Keys
+// Load API keys
 if (!process.env.OPENAI_API_KEY) {
   console.error("❌ OPENAI_API_KEY is missing!");
 } else {
@@ -26,16 +26,14 @@ if (!process.env.KIWI_API_KEY) {
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-/**
- * Improved function: returns any missing field as null
- */
+// Improved extraction: finds any info user gives, returns null for missing
 function extractFlightInfo(text) {
-  // Extract "from X to Y"
+  // Try: "from X to Y"
   const cityMatch = text.match(/from\s+([a-zA-Z\s]+?)\s+to\s+([a-zA-Z\s]+)/i);
   const from = cityMatch?.[1]?.trim() || null;
   const to = cityMatch?.[2]?.trim() || null;
 
-  // Extract date from the rest of the prompt
+  // Date: use rest of string after "from X to Y", else whole string
   let datePart = "";
   if (cityMatch) {
     datePart = text.slice(cityMatch[0].length);
@@ -43,7 +41,7 @@ function extractFlightInfo(text) {
     datePart = text;
   }
 
-  // Use chrono-node to find a date
+  // Try chrono for a date
   const parsedDates = chrono.parse(datePart);
   const date = parsedDates.length ? parsedDates[0].start.date().toISOString().split("T")[0] : null;
 
@@ -73,86 +71,80 @@ Ask only the information that’s missing (like destination, departure, date ran
 and always keep your replies short, cheerful, and easy to read.
 Avoid sounding robotic. Keep a helpful tone, like a smart and friendly concierge who's excited to assist!`
         }
-      ]
+      ],
+      // Keep track of partial user flight search info!
+      flightSearch: {
+        from: null,
+        to: null,
+        date: null
+      }
     };
   }
 
   const session = sessionStore[sessionId];
   session.history.push({ role: "user", content: prompt });
-  const recentMessages = session.history.slice(-10);
 
-  // 🧠 Detect flight details, handle missing info
-  const flightInfo = extractFlightInfo(prompt);
+  // --- NEW: accumulate info across messages ---
+  const latestInfo = extractFlightInfo(prompt);
+  if (latestInfo.from) session.flightSearch.from = latestInfo.from;
+  if (latestInfo.to) session.flightSearch.to = latestInfo.to;
+  if (latestInfo.date) session.flightSearch.date = latestInfo.date;
 
-  // If not all info, ask for just what's missing
-  if (flightInfo && (!flightInfo.from || !flightInfo.to || !flightInfo.date)) {
-    let reply = "Just need a bit more info! ";
-    if (!flightInfo.from) reply += "Which city will you be flying from? ";
-    if (!flightInfo.to) reply += "Where would you like to fly to? ";
-    if (!flightInfo.date) reply += "When would you like to fly? ";
-    session.history.push({ role: "assistant", content: reply.trim() });
-    return res.json({ reply: reply.trim() });
+  const { from, to, date } = session.flightSearch;
+
+  // Ask only for the info that's still missing
+  let missing = [];
+  if (!from) missing.push("Which city will you be flying from?");
+  if (!to) missing.push("Where would you like to fly to?");
+  if (!date) missing.push("When would you like to fly?");
+
+  if (missing.length) {
+    const reply = "Just need a bit more info! " + missing.join(" ");
+    session.history.push({ role: "assistant", content: reply });
+    return res.json({ reply });
   }
 
-  // If ALL info is present, call Kiwi API
-  if (flightInfo && flightInfo.from && flightInfo.to && flightInfo.date) {
-    const { from, to, date } = flightInfo;
-    try {
-      const response = await axios.get("https://kiwi-com-cheap-flights.p.rapidapi.com/round-trip", {
-        params: {
-          source: `City:${from}`,
-          destination: `City:${to}`,
-          outbound: date,
-          currency: "usd",
-          locale: "en",
-          adults: 1,
-          cabinClass: "ECONOMY",
-          sortBy: "QUALITY",
-          limit: 3,
-          contentProviders: "KIWI"
-        },
-        headers: {
-          "X-RapidAPI-Key": process.env.KIWI_API_KEY,
-          "X-RapidAPI-Host": "kiwi-com-cheap-flights.p.rapidapi.com"
-        }
-      });
-
-      const flights = response.data?.data || [];
-      if (!flights.length) {
-        return res.json({ reply: `😢 Sorry, I couldn't find any flights from ${from} to ${to} on ${date}.` });
-      }
-
-      const reply = flights.map(flight => {
-        const airline = flight.airlines?.[0] || "Unknown airline";
-        const price = flight.price?.amount || "N/A";
-        const depTime = new Date(flight.local_departure).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-        return `✈️ ${airline} — Departs at ${depTime}, $${price}`;
-      }).join("\n");
-
-      session.history.push({ role: "assistant", content: reply });
-      return res.json({ reply });
-    } catch (err) {
-      console.error("🔥 Kiwi API error:", err.response?.data || err.message || err);
-      return res.status(500).json({ error: "Flight search failed" });
-    }
-  }
-
-  // 🎯 Otherwise, fallback to OpenAI for general conversation
+  // All info present: fetch flights!
   try {
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4.1-nano",
-      messages: recentMessages,
-      temperature: 0.4,
-      max_tokens: 300
+    const response = await axios.get("https://kiwi-com-cheap-flights.p.rapidapi.com/round-trip", {
+      params: {
+        source: `City:${from}`,
+        destination: `City:${to}`,
+        outbound: date,
+        currency: "usd",
+        locale: "en",
+        adults: 1,
+        cabinClass: "ECONOMY",
+        sortBy: "QUALITY",
+        limit: 3,
+        contentProviders: "KIWI"
+      },
+      headers: {
+        "X-RapidAPI-Key": process.env.KIWI_API_KEY,
+        "X-RapidAPI-Host": "kiwi-com-cheap-flights.p.rapidapi.com"
+      }
     });
 
-    const reply = completion.choices[0].message.content;
-    session.history.push({ role: "assistant", content: reply });
+    const flights = response.data?.data || [];
+    if (!flights.length) {
+      session.flightSearch = { from: null, to: null, date: null };
+      return res.json({ reply: `😢 Sorry, I couldn't find any flights from ${from} to ${to} on ${date}.` });
+    }
 
-    res.json({ reply });
+    const reply = flights.map(flight => {
+      const airline = flight.airlines?.[0] || "Unknown airline";
+      const price = flight.price?.amount || "N/A";
+      const depTime = new Date(flight.local_departure).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return `✈️ ${airline} — Departs at ${depTime}, $${price}`;
+    }).join("\n");
+
+    // Reset for next search
+    session.flightSearch = { from: null, to: null, date: null };
+    session.history.push({ role: "assistant", content: reply });
+    return res.json({ reply });
   } catch (err) {
-    console.error("🔥 OpenAI error:", err?.response?.data || err.message || err);
-    res.status(500).json({ error: "AI request failed" });
+    console.error("🔥 Kiwi API error:", err.response?.data || err.message || err);
+    return res.status(500).json({ error: "Flight search failed" });
   }
 });
 
@@ -160,3 +152,4 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`🚀 API running on port ${PORT}`);
 });
+
