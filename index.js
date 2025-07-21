@@ -13,7 +13,8 @@ app.use(express.json());
 const sessionStore = {};
 
 function extractFlightInfo(text, sessionFlightSearch = {}) {
-  let cityMatch = text.match(/from\s+([a-zA-Z\s]+?)\s+to\s+([a-zA-Z\s]+?)(?:\s|$)/i);
+  // allow punctuation like commas or question marks after the destination
+  let cityMatch = text.match(/from\s+([a-zA-Z\s]+)\s+to\s+([a-zA-Z\s]+)(?=[\s,.!?]|$)/i);
   let from = cityMatch?.[1]?.trim() || null;
   let toRaw = cityMatch?.[2]?.trim() || null;
   let to = toRaw;
@@ -25,7 +26,7 @@ function extractFlightInfo(text, sessionFlightSearch = {}) {
     let matchDateWord = toRaw?.match(/\b(next|tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{1,2}\/\d{1,2}|\d{4}-\d{2}-\d{2})\b.*$/i);
     if (!datePart && matchDateWord) datePart = matchDateWord[0];
   } else {
-    cityMatch = text.match(/to\s+([a-zA-Z\s]+)/i);
+    cityMatch = text.match(/to\s+([a-zA-Z\s]+)(?=[\s,.!?]|$)/i);
     to = cityMatch?.[1]?.trim() || to || null;
     from = sessionFlightSearch.from || from || null;
     datePart = cityMatch ? text.slice(cityMatch[0].length) : text;
