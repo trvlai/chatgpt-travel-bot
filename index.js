@@ -84,7 +84,7 @@ Avoid sounding robotic. Keep a helpful tone, like a smart and friendly concierge
   const session = sessionStore[sessionId];
   session.history.push({ role: "user", content: prompt });
 
-  // --- NEW: accumulate info across messages ---
+  // --- Accumulate info across messages ---
   const latestInfo = extractFlightInfo(prompt);
   if (latestInfo.from) session.flightSearch.from = latestInfo.from;
   if (latestInfo.to) session.flightSearch.to = latestInfo.to;
@@ -127,7 +127,8 @@ Avoid sounding robotic. Keep a helpful tone, like a smart and friendly concierge
 
     const flights = response.data?.data || [];
     if (!flights.length) {
-      session.flightSearch = { from: null, to: null, date: null };
+      // Only reset date so user can try "what about [other date]?"
+      session.flightSearch.date = null;
       return res.json({ reply: `😢 Sorry, I couldn't find any flights from ${from} to ${to} on ${date}.` });
     }
 
@@ -138,8 +139,8 @@ Avoid sounding robotic. Keep a helpful tone, like a smart and friendly concierge
       return `✈️ ${airline} — Departs at ${depTime}, $${price}`;
     }).join("\n");
 
-    // Reset for next search
-    session.flightSearch = { from: null, to: null, date: null };
+    // Only reset date for follow-up, keep from/to
+    session.flightSearch.date = null;
     session.history.push({ role: "assistant", content: reply });
     return res.json({ reply });
   } catch (err) {
@@ -152,4 +153,3 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`🚀 API running on port ${PORT}`);
 });
-
