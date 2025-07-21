@@ -12,15 +12,6 @@ app.use(express.json());
 // In-memory session store
 const sessionStore = {};
 
-// Utility: Capitalize first letter of each word in city
-function formatCity(city) {
-  if (!city) return "";
-  return city
-    .split(' ')
-    .map(s => s.charAt(0).toUpperCase() + s.slice(1).toLowerCase())
-    .join(' ');
-}
-
 // Load API keys
 if (!process.env.OPENAI_API_KEY) {
   console.error("❌ OPENAI_API_KEY is missing!");
@@ -35,25 +26,39 @@ if (!process.env.KIWI_API_KEY) {
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+/**
+ * Robust city and date extractor
+ */
 function extractFlightInfo(text, sessionFlightSearch = {}) {
-  let cityMatch = text.match(/from\s+([a-zA-Z\s]+?)\s+to\s+([a-zA-Z\s]+)/i);
+  // Try "from X to Y" pattern
+  let cityMatch = text.match(/from\s+([a-zA-Z\s]+?)\s+to\s+([a-zA-Z\s]+?)(?:\s|$)/i);
   let from = cityMatch?.[1]?.trim() || null;
-  let to = cityMatch?.[2]?.trim() || null;
-  let datePart = "";
+  let toRaw = cityMatch?.[2]?.trim() || null;
+  let to = toRaw;
 
+  // Remove trailing date-like words from 'to'
+  if (to) to = to.replace(/\b(next|tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{1,2}\/\d{1,2}|\d{4}-\d{2}-\d{2})\b.*$/i, "").trim();
+
+  let datePart = "";
   if (cityMatch) {
     datePart = text.slice(cityMatch[0].length);
+    // If 'to' had a date word, extract and use as datePart
+    let matchDateWord = toRaw?.match(/\b(next|tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{1,2}\/\d{1,2}|\d{4}-\d{2}-\d{2})\b.*$/i);
+    if (!datePart && matchDateWord) datePart = matchDateWord[0];
   } else {
+    // Try "to Y" only (use previous 'from' if available)
     cityMatch = text.match(/to\s+([a-zA-Z\s]+)/i);
     to = cityMatch?.[1]?.trim() || to || null;
     from = sessionFlightSearch.from || from || null;
     datePart = cityMatch ? text.slice(cityMatch[0].length) : text;
+    // If no 'from' or 'to', try just a single city
     if (!to && !from) {
       const cityWord = text.match(/([A-Z][a-z]+)/g);
       if (cityWord && cityWord.length === 1) to = cityWord[0];
     }
   }
 
+  // Use chrono-node to grab date
   const parsedDates = chrono.parse(datePart);
   const date = parsedDates.length ? parsedDates[0].start.date().toISOString().split("T")[0] : null;
 
@@ -101,10 +106,7 @@ Avoid sounding robotic. Keep a helpful tone, like a smart and friendly concierge
   if (latestInfo.to) session.flightSearch.to = latestInfo.to;
   if (latestInfo.date) session.flightSearch.date = latestInfo.date;
 
-  // Capitalize for Kiwi
-  const from = formatCity(session.flightSearch.from);
-  const to = formatCity(session.flightSearch.to);
-  const date = session.flightSearch.date;
+  const { from, to, date } = session.flightSearch;
 
   // Ask only for missing info
   let missing = [];
@@ -118,10 +120,10 @@ Avoid sounding robotic. Keep a helpful tone, like a smart and friendly concierge
     return res.json({ reply });
   }
 
-  // LOG for debugging
+  // --- LOG ---
   console.log("[Kiwi flight search]", { from, to, date });
 
-  // Real flight search
+  // --- Real flight search ---
   try {
     const response = await axios.get("https://kiwi-com-cheap-flights.p.rapidapi.com/one-way", {
       params: {
@@ -142,7 +144,7 @@ Avoid sounding robotic. Keep a helpful tone, like a smart and friendly concierge
       }
     });
 
-    // Only log serializable objects
+    // Log only plain objects
     console.log("[Kiwi API response]", JSON.stringify(response.data, null, 2));
 
     const flights = response.data?.data || [];
@@ -158,17 +160,12 @@ Avoid sounding robotic. Keep a helpful tone, like a smart and friendly concierge
       return `✈️ ${airline} — Departs at ${depTime}, $${price}`;
     }).join("\n");
 
-    // Reset search state ONLY ON SUCCESS
+    // Reset session search info ONLY ON SUCCESS
     session.flightSearch = { from: null, to: null, date: null };
     session.history.push({ role: "assistant", content: reply });
     return res.json({ reply });
   } catch (err) {
-    // Extra debugging info
-    if (err.response && err.response.data) {
-      console.error("🔥 Kiwi API error:", JSON.stringify(err.response.data));
-    } else {
-      console.error("🔥 Kiwi API error:", err.message || err);
-    }
+    console.error("🔥 Kiwi API error:", err.response?.data || err.message || err);
     return res.status(500).json({ error: "Flight search failed" });
   }
 });
@@ -177,3 +174,4 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`🚀 API running on port ${PORT}`);
 });
+
