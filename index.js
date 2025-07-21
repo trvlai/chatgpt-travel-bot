@@ -2,14 +2,17 @@ const express = require("express");
 const cors = require("cors");
 const OpenAI = require("openai");
 const axios = require("axios");
+const chrono = require("chrono-node"); // ✅ NEW: smart date parser
 require("dotenv").config();
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
+// ✅ In-memory session store (replace with Redis/DB for production)
 const sessionStore = {};
 
+// ✅ Load API Keys
 if (!process.env.OPENAI_API_KEY) {
   console.error("❌ OPENAI_API_KEY is missing!");
 } else {
@@ -25,19 +28,18 @@ if (!process.env.KIWI_API_KEY) {
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 function extractFlightInfo(text) {
-  const match = text.match(/from (\w+) to (\w+)(?:.*?)?(on|this|next)? ?([\w\s,]*)?/i);
+  const match = text.match(/from ([a-zA-Z\s]+) to ([a-zA-Z\s]+)(.*)/i);
   if (!match) return null;
 
-  const [, from, to, , rawDate] = match;
-  let parsedDate = new Date();
+  const [, fromRaw, toRaw, datePart] = match;
+  const from = fromRaw.trim();
+  const to = toRaw.trim();
 
-  if (rawDate && rawDate.toLowerCase().includes("friday")) {
-    parsedDate.setDate(parsedDate.getDate() + ((5 - parsedDate.getDay() + 7) % 7));
-  } else if (rawDate && rawDate.toLowerCase().includes("monday")) {
-    parsedDate.setDate(parsedDate.getDate() + ((1 - parsedDate.getDay() + 7) % 7));
-  }
+  const parsedDates = chrono.parse(datePart);
+  if (!parsedDates.length) return null;
 
-  const formattedDate = parsedDate.toISOString().split("T")[0]; // e.g. "2025-07-25"
+  const firstDate = parsedDates[0].start.date();
+  const formattedDate = firstDate.toISOString().split("T")[0];
 
   return {
     from,
@@ -57,6 +59,7 @@ app.post("/chat", async (req, res) => {
     return res.status(400).json({ error: "Missing prompt or sessionId" });
   }
 
+  // Create session if it doesn't exist
   if (!sessionStore[sessionId]) {
     sessionStore[sessionId] = {
       history: [
@@ -117,11 +120,12 @@ Avoid sounding robotic. Keep a helpful tone, like a smart and friendly concierge
       return res.json({ reply });
 
     } catch (err) {
-      console.error("🔥 Kiwi API error:", err?.response?.data || err.message || err);
+      console.error("🔥 Kiwi API error:", err.response?.data || err.message || err);
       return res.status(500).json({ error: "Flight search failed" });
     }
   }
 
+  // 🎯 Default: call OpenAI if no direct flight info was detected
   try {
     const completion = await openai.chat.completions.create({
       model: "gpt-4.1-nano",
