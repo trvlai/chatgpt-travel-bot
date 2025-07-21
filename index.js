@@ -1,6 +1,8 @@
 const express = require("express");
 const cors = require("cors");
 const OpenAI = require("openai");
+const axios = require("axios");
+require("dotenv").config();
 
 const app = express();
 app.use(cors());
@@ -9,14 +11,35 @@ app.use(express.json());
 // ✅ In-memory session store (replace with Redis/DB for production)
 const sessionStore = {};
 
-// Load API Key
+// ✅ Load API Key
 if (!process.env.OPENAI_API_KEY) {
   console.error("❌ OPENAI_API_KEY is missing!");
 } else {
   console.log("✅ OPENAI_API_KEY loaded");
 }
 
+if (!process.env.KIWI_API_KEY) {
+  console.error("❌ KIWI_API_KEY is missing!");
+} else {
+  console.log("✅ KIWI_API_KEY loaded");
+}
+
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+function extractFlightInfo(text) {
+  const match = text.match(/flights? from (\w+) to (\w+) on ([\w\s,]+)/i);
+  if (!match) return null;
+
+  const [_, from, to, date] = match;
+  const parsedDate = new Date(date);
+  if (isNaN(parsedDate)) return null;
+
+  return {
+    from,
+    to,
+    date: parsedDate.toISOString().slice(0, 10)
+  };
+}
 
 app.get("/", (req, res) => {
   res.send("✅ Travel Chat API is running");
@@ -51,6 +74,53 @@ Avoid sounding robotic. Keep a helpful tone, like a smart and friendly concierge
   // Optional: limit history for token budget
   const recentMessages = session.history.slice(-10);
 
+  // 🧠 Check for flight details in the prompt
+  const flightInfo = extractFlightInfo(prompt);
+  if (flightInfo) {
+    const { from, to, date } = flightInfo;
+
+    try {
+      const response = await axios.get("https://kiwi-com-cheap-flights.p.rapidapi.com/round-trip", {
+        params: {
+          source: `City:${from}`,
+          destination: `City:${to}`,
+          outbound: date,
+          currency: "usd",
+          locale: "en",
+          adults: 1,
+          cabinClass: "ECONOMY",
+          sortBy: "QUALITY",
+          limit: 3,
+          contentProviders: "KIWI"
+        },
+        headers: {
+          "X-RapidAPI-Key": process.env.KIWI_API_KEY,
+          "X-RapidAPI-Host": "kiwi-com-cheap-flights.p.rapidapi.com"
+        }
+      });
+
+      const flights = response.data?.data || [];
+      if (!flights.length) {
+        return res.json({ reply: `😢 Sorry, I couldn't find any flights from ${from} to ${to} on ${date}.` });
+      }
+
+      const reply = flights.map(flight => {
+        const airline = flight.airlines?.[0] || "Unknown airline";
+        const price = flight.price?.amount || "N/A";
+        const depTime = new Date(flight.local_departure).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        return `✈️ ${airline} — Departs at ${depTime}, $${price}`;
+      }).join("\n");
+
+      session.history.push({ role: "assistant", content: reply });
+      return res.json({ reply });
+
+    } catch (err) {
+      console.error("🔥 Kiwi API error:", err.response?.data || err.message || err);
+      return res.status(500).json({ error: "Flight search failed" });
+    }
+  }
+
+  // 🎯 Default: call OpenAI if no direct flight info was detected
   try {
     const completion = await openai.chat.completions.create({
       model: "gpt-4.1-nano",
