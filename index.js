@@ -8,10 +8,8 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ✅ In-memory session store (replace with Redis/DB for production)
 const sessionStore = {};
 
-// ✅ Load API Key
 if (!process.env.OPENAI_API_KEY) {
   console.error("❌ OPENAI_API_KEY is missing!");
 } else {
@@ -27,17 +25,24 @@ if (!process.env.KIWI_API_KEY) {
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 function extractFlightInfo(text) {
-  const match = text.match(/flights? from (\w+) to (\w+) on ([\w\s,]+)/i);
+  const match = text.match(/from (\w+) to (\w+)(?:.*?)?(on|this|next)? ?([\w\s,]*)?/i);
   if (!match) return null;
 
-  const [_, from, to, date] = match;
-  const parsedDate = new Date(date);
-  if (isNaN(parsedDate)) return null;
+  const [, from, to, , rawDate] = match;
+  let parsedDate = new Date();
+
+  if (rawDate && rawDate.toLowerCase().includes("friday")) {
+    parsedDate.setDate(parsedDate.getDate() + ((5 - parsedDate.getDay() + 7) % 7));
+  } else if (rawDate && rawDate.toLowerCase().includes("monday")) {
+    parsedDate.setDate(parsedDate.getDate() + ((1 - parsedDate.getDay() + 7) % 7));
+  }
+
+  const formattedDate = parsedDate.toISOString().split("T")[0]; // e.g. "2025-07-25"
 
   return {
     from,
     to,
-    date: parsedDate.toISOString().slice(0, 10)
+    date: formattedDate
   };
 }
 
@@ -52,7 +57,6 @@ app.post("/chat", async (req, res) => {
     return res.status(400).json({ error: "Missing prompt or sessionId" });
   }
 
-  // Create session if it doesn't exist
   if (!sessionStore[sessionId]) {
     sessionStore[sessionId] = {
       history: [
@@ -71,10 +75,8 @@ Avoid sounding robotic. Keep a helpful tone, like a smart and friendly concierge
   const session = sessionStore[sessionId];
   session.history.push({ role: "user", content: prompt });
 
-  // Optional: limit history for token budget
   const recentMessages = session.history.slice(-10);
 
-  // 🧠 Check for flight details in the prompt
   const flightInfo = extractFlightInfo(prompt);
   if (flightInfo) {
     const { from, to, date } = flightInfo;
@@ -115,12 +117,11 @@ Avoid sounding robotic. Keep a helpful tone, like a smart and friendly concierge
       return res.json({ reply });
 
     } catch (err) {
-      console.error("🔥 Kiwi API error:", err.response?.data || err.message || err);
+      console.error("🔥 Kiwi API error:", err?.response?.data || err.message || err);
       return res.status(500).json({ error: "Flight search failed" });
     }
   }
 
-  // 🎯 Default: call OpenAI if no direct flight info was detected
   try {
     const completion = await openai.chat.completions.create({
       model: "gpt-4.1-nano",
