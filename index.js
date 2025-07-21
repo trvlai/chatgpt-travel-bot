@@ -2,7 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const OpenAI = require("openai");
 const axios = require("axios");
-const chrono = require("chrono-node"); // ✅ NEW: smart date parser
+const chrono = require("chrono-node");
 require("dotenv").config();
 
 const app = express();
@@ -18,7 +18,6 @@ if (!process.env.OPENAI_API_KEY) {
 } else {
   console.log("✅ OPENAI_API_KEY loaded");
 }
-
 if (!process.env.KIWI_API_KEY) {
   console.error("❌ KIWI_API_KEY is missing!");
 } else {
@@ -27,25 +26,28 @@ if (!process.env.KIWI_API_KEY) {
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+/**
+ * Improved function: returns any missing field as null
+ */
 function extractFlightInfo(text) {
-  const match = text.match(/from ([a-zA-Z\s]+) to ([a-zA-Z\s]+)(.*)/i);
-  if (!match) return null;
+  // Extract "from X to Y"
+  const cityMatch = text.match(/from\s+([a-zA-Z\s]+?)\s+to\s+([a-zA-Z\s]+)/i);
+  const from = cityMatch?.[1]?.trim() || null;
+  const to = cityMatch?.[2]?.trim() || null;
 
-  const [, fromRaw, toRaw, datePart] = match;
-  const from = fromRaw.trim();
-  const to = toRaw.trim();
+  // Extract date from the rest of the prompt
+  let datePart = "";
+  if (cityMatch) {
+    datePart = text.slice(cityMatch[0].length);
+  } else {
+    datePart = text;
+  }
 
+  // Use chrono-node to find a date
   const parsedDates = chrono.parse(datePart);
-  if (!parsedDates.length) return null;
+  const date = parsedDates.length ? parsedDates[0].start.date().toISOString().split("T")[0] : null;
 
-  const firstDate = parsedDates[0].start.date();
-  const formattedDate = firstDate.toISOString().split("T")[0];
-
-  return {
-    from,
-    to,
-    date: formattedDate
-  };
+  return { from, to, date };
 }
 
 app.get("/", (req, res) => {
@@ -77,13 +79,24 @@ Avoid sounding robotic. Keep a helpful tone, like a smart and friendly concierge
 
   const session = sessionStore[sessionId];
   session.history.push({ role: "user", content: prompt });
-
   const recentMessages = session.history.slice(-10);
 
+  // 🧠 Detect flight details, handle missing info
   const flightInfo = extractFlightInfo(prompt);
-  if (flightInfo) {
-    const { from, to, date } = flightInfo;
 
+  // If not all info, ask for just what's missing
+  if (flightInfo && (!flightInfo.from || !flightInfo.to || !flightInfo.date)) {
+    let reply = "Just need a bit more info! ";
+    if (!flightInfo.from) reply += "Which city will you be flying from? ";
+    if (!flightInfo.to) reply += "Where would you like to fly to? ";
+    if (!flightInfo.date) reply += "When would you like to fly? ";
+    session.history.push({ role: "assistant", content: reply.trim() });
+    return res.json({ reply: reply.trim() });
+  }
+
+  // If ALL info is present, call Kiwi API
+  if (flightInfo && flightInfo.from && flightInfo.to && flightInfo.date) {
+    const { from, to, date } = flightInfo;
     try {
       const response = await axios.get("https://kiwi-com-cheap-flights.p.rapidapi.com/round-trip", {
         params: {
@@ -118,14 +131,13 @@ Avoid sounding robotic. Keep a helpful tone, like a smart and friendly concierge
 
       session.history.push({ role: "assistant", content: reply });
       return res.json({ reply });
-
     } catch (err) {
       console.error("🔥 Kiwi API error:", err.response?.data || err.message || err);
       return res.status(500).json({ error: "Flight search failed" });
     }
   }
 
-  // 🎯 Default: call OpenAI if no direct flight info was detected
+  // 🎯 Otherwise, fallback to OpenAI for general conversation
   try {
     const completion = await openai.chat.completions.create({
       model: "gpt-4.1-nano",
