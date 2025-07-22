@@ -1,7 +1,5 @@
 const express = require("express");
 const cors = require("cors");
-const OpenAI = require("openai");
-const axios = require("axios");
 const chrono = require("chrono-node");
 require("dotenv").config();
 
@@ -9,15 +7,12 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// In-memory session store
 const sessionStore = {};
 
-// Helper: Only greet if this is the very first exchange
 function shouldGreet(session) {
-  return session.history.length === 1; // Only the system prompt exists
+  return session.history.length === 1; // Only system message
 }
 
-// Extract flight info robustly: "London to Dubai next Monday", "from Paris to Rome", etc.
 function extractFlightInfo(text, sessionFlightSearch = {}) {
   let cityMatch = text.match(/from\s+([a-zA-Z\s]+?)\s+to\s+([a-zA-Z\s]+?)(?:\s|$)/i);
   let from = cityMatch?.[1]?.trim() || null;
@@ -47,23 +42,6 @@ function extractFlightInfo(text, sessionFlightSearch = {}) {
   return { from, to, date };
 }
 
-// City name -> Skyscanner code
-const cityToSkyId = city => {
-  const lookup = {
-    london: "LOND",
-    paris: "PARI",
-    rome: "ROME",
-    dubai: "DXBA",
-    newyork: "NYCA",
-    madrid: "MADR",
-    barcelona: "BCN",
-    tokyo: "TYOA"
-    // ...expand as needed!
-  };
-  if (!city) return null;
-  return lookup[city.toLowerCase().replace(/\s/g, "")] || null;
-};
-
 app.get("/", (req, res) => {
   res.send("✅ Travel Chat API is running");
 });
@@ -74,7 +52,7 @@ app.post("/chat", async (req, res) => {
     return res.status(400).json({ error: "Missing prompt or sessionId" });
   }
 
-  // Init session (with system prompt)
+  // Init session
   if (!sessionStore[sessionId]) {
     sessionStore[sessionId] = {
       history: [
@@ -121,54 +99,12 @@ app.post("/chat", async (req, res) => {
     return res.json({ reply });
   }
 
-  // --- City to Skyscanner code ---
-  const fromSkyId = cityToSkyId(from);
-  const toSkyId = cityToSkyId(to);
-
-  if (!fromSkyId || !toSkyId) {
-    const msg = `Oops, I had trouble finding "${from}" or "${to}". Could you try major cities like London, Paris, or Dubai? 😊`;
-    session.history.push({ role: "assistant", content: msg });
-    return res.json({ reply: msg });
-  }
-
-  try {
-    const response = await axios.get("https://fly-scraper.p.rapidapi.com/flights/search-one-way", {
-      params: {
-        originSkyId: fromSkyId,
-        destinationSkyId: toSkyId,
-        departureDate: date,
-        adults: "1"
-      },
-      headers: {
-        "x-rapidapi-key": process.env.RAPIDAPI_KEY,
-        "x-rapidapi-host": "fly-scraper.p.rapidapi.com"
-      }
-    });
-
-    const itineraries = response.data?.data?.itineraries || [];
-    if (!itineraries.length) {
-      const reply = `Oh no, I couldn't find any flights from ${from} to ${to} on ${date}. Want to try another date or destination? 😊`;
-      session.history.push({ role: "assistant", content: reply });
-      return res.json({ reply });
-    }
-
-    // Friendly summary with top 3 flights
-    const reply = `Great news! Here are some flight options from ${from} to ${to} on ${date}:\n` + 
-      itineraries.slice(0, 3).map(flight => {
-        const price = flight.price?.raw || "N/A";
-        const dep = flight.legs?.[0]?.departureTime || "";
-        const arr = flight.legs?.[0]?.arrivalTime || "";
-        return `✈️ $${price} | Departs: ${dep} → Arrives: ${arr}`;
-      }).join("\n") + `\nLet me know if you want more details or different options! 😄`;
-
-    // Reset after successful search
-    session.flightSearch = { from: null, to: null, date: null };
-    session.history.push({ role: "assistant", content: reply });
-    return res.json({ reply });
-  } catch (err) {
-    console.error("🔥 Fly Scraper API error:", err.response?.data || err.message || err);
-    return res.status(500).json({ error: "Flight search failed" });
-  }
+  // --- All info gathered: show link ---
+  const reply = `That sounds great! 😄 You can book your tickets here:\nskyscanner.com`;
+  // Reset state for a new search after this reply
+  session.flightSearch = { from: null, to: null, date: null };
+  session.history.push({ role: "assistant", content: reply });
+  return res.json({ reply });
 });
 
 const PORT = process.env.PORT || 10000;
