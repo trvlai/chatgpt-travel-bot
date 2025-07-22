@@ -1,6 +1,6 @@
 const express = require("express");
 const cors = require("cors");
-const chrono = require("chrono-node");
+const { OpenAI } = require("openai");
 require("dotenv").config();
 
 const app = express();
@@ -8,43 +8,7 @@ app.use(cors());
 app.use(express.json());
 
 const sessionStore = {};
-
-function shouldGreet(session) {
-  return session.history.length === 1; // Only system message
-}
-
-function extractFlightInfo(text, sessionFlightSearch = {}) {
-  let cityMatch = text.match(/from\s+([a-zA-Z\s]+?)\s+to\s+([a-zA-Z\s]+?)(?:\s|$)/i);
-  let from = cityMatch?.[1]?.trim() || null;
-  let to = cityMatch?.[2]?.trim() || null;
-
-  // Handles "London to Dubai next Monday" or "London → Dubai"
-  if (!from || !to) {
-    let genericMatch = text.match(/([A-Z][a-zA-Z\s]+)\s+(?:to|–|->)\s+([A-Z][a-zA-Z\s]+)/i);
-    if (genericMatch) {
-      from = genericMatch[1].trim();
-      to = genericMatch[2].trim();
-    }
-  }
-
-  // Fill from session if needed
-  from = from || sessionFlightSearch.from || null;
-  to = to || sessionFlightSearch.to || null;
-
-  // Date extraction—everything after both cities
-  let afterCities = text;
-  if (to) {
-    afterCities = text.split(to).slice(1).join(" ");
-  }
-  const parsedDates = chrono.parse(afterCities);
-  const date = parsedDates.length ? parsedDates[0].start.date().toISOString().split("T")[0] : (sessionFlightSearch.date || null);
-
-  return { from, to, date };
-}
-
-app.get("/", (req, res) => {
-  res.send("✅ Travel Chat API is running");
-});
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 app.post("/chat", async (req, res) => {
   const { prompt, sessionId } = req.body;
@@ -52,59 +16,58 @@ app.post("/chat", async (req, res) => {
     return res.status(400).json({ error: "Missing prompt or sessionId" });
   }
 
-  // Init session
+  // Initialize session
   if (!sessionStore[sessionId]) {
     sessionStore[sessionId] = {
       history: [
         {
           role: "system",
-          content: `You're Moouris, a warm, friendly, and enthusiastic AI travel buddy! Your goal is to help users find the best flights with a conversational, human-like tone. Be empathetic, upbeat, and clear, like a trusted friend who's excited to plan a trip. Understand natural phrases like "London to Dubai next Monday" and gently guide users to provide missing details (e.g., departure city, destination, or date) one at a time—never all together, and never greet twice. Keep replies short, engaging, and easy to follow, with a touch of charm!`
+          content: `
+You are Moouris, an upbeat, warm, and very human-sounding AI travel assistant. Your job is to help users book flights. 
+- If a user just says "hey" or "hi", greet them and ask how you can help (ONE time only). 
+- If they provide a request like "London to Dubai next Monday" (even with minor typos or weird word order), immediately extract as much as you can (origin, destination, date) and reply with a friendly, contextual response.
+- If any info is missing, ask for just ONE piece at a time (never all at once), always in a conversational, friendly way.
+- Never repeat the same greeting twice in a row or after the initial message.
+- Once you have all info, send: "That sounds great! 😄 You can book your tickets here: skyscanner.com"
+- Always sound like a real, helpful person, not a bot.
+- Handle typos, abbreviations, and casual English.
+`
         }
       ],
-      flightSearch: { from: null, to: null, date: null }
+      flightSearch: { from: null, to: null, date: null },
+      greeted: false
     };
   }
 
   const session = sessionStore[sessionId];
   session.history.push({ role: "user", content: prompt });
 
-  // --- Robust info extraction/accumulation ---
-  const latestInfo = extractFlightInfo(prompt, session.flightSearch);
-  if (latestInfo.from) session.flightSearch.from = latestInfo.from;
-  if (latestInfo.to) session.flightSearch.to = latestInfo.to;
-  if (latestInfo.date) session.flightSearch.date = latestInfo.date;
-  const { from, to, date } = session.flightSearch;
+  // Call GPT for intent & slot extraction + reply
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4o", // Use "gpt-4o" or "gpt-3.5-turbo" if no access to 4o
+    messages: [
+      ...session.history,
+      {
+        role: "system",
+        content: `
+If the user message contains clear info, update (in your mind) the search: origin city, destination city, and date (even if date is vague like "next Monday" or "in two weeks").
+If something is missing, ask for it, but ONLY one thing at a time, in a friendly, real tone, and never repeat greetings after the first reply.
+If you have everything, say: "That sounds great! 😄 You can book your tickets here: skyscanner.com"
+If the user only says "hey" or "hi", greet and offer help just once.
+`
+      }
+    ],
+    temperature: 0.4,
+    max_tokens: 180
+  });
 
-  // --- Friendly, step-by-step missing info ---
-  let missing = [];
-  if (!from) missing.push("from");
-  if (!to) missing.push("to");
-  if (!date) missing.push("date");
+  // Keep conversation history short
+  if (session.history.length > 20) session.history = session.history.slice(-10);
 
-  // Pick *one* missing info to ask for (never all together)
-  if (missing.length) {
-    let reply = "";
-    if (shouldGreet(session)) {
-      reply = `Hey there! I'm excited to help with your trip.`;
-    }
-    if (!from) {
-      reply += (reply ? " " : "") + "Which city are you flying from?";
-    } else if (!to) {
-      reply += (reply ? " " : "") + "Great! Where would you like to fly to?";
-    } else if (!date) {
-      reply += (reply ? " " : "") + `Awesome! When would you like to travel from ${from} to ${to}?`;
-    }
-    reply = reply.trim() + " 😊";
-    session.history.push({ role: "assistant", content: reply });
-    return res.json({ reply });
-  }
-
-  // --- All info gathered: show link ---
-  const reply = `That sounds great! 😄 You can book your tickets here:\nskyscanner.com`;
-  // Reset state for a new search after this reply
-  session.flightSearch = { from: null, to: null, date: null };
+  // Save and reply
+  const reply = completion.choices[0].message.content;
   session.history.push({ role: "assistant", content: reply });
-  return res.json({ reply });
+  res.json({ reply });
 });
 
 const PORT = process.env.PORT || 10000;
