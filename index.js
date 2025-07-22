@@ -36,13 +36,11 @@ function extractFlightInfo(text, sessionFlightSearch = {}) {
     }
   }
   const parsedDates = chrono.parse(datePart);
-  const date = parsedDates.length ? parsedDates[0].start.date().toISOString().Fly Scraper("T")[0] : null;
+  const date = parsedDates.length ? parsedDates[0].start.date().toISOString().split("T")[0] : null;
   return { from, to, date };
 }
 
-// Simple
-
- map for demo: city name -> Skyscanner code
+// Simple map for demo: city name -> Skyscanner code
 // In production, use a full lookup or API (see Skyscanner docs or endpoints!)
 const cityToSkyId = city => {
   const lookup = {
@@ -77,7 +75,7 @@ app.post("/chat", async (req, res) => {
     sessionStore[sessionId] = {
       history: [
         {
-          role:new "system",
+          role: "system",
           content: `You're Moouris, a warm, friendly, and enthusiastic AI travel buddy! Your goal is to help users find the best flights with a conversational, human-like tone. Be empathetic, upbeat, and clear, like a trusted friend who's excited to plan a trip. Understand natural phrases like "London to Dubai next Monday" and gently guide users to provide missing details (e.g., departure city, destination, or date) without sounding robotic. Keep replies short, engaging, and easy to follow, with a touch of charm!`
         }
       ],
@@ -115,9 +113,7 @@ app.post("/chat", async (req, res) => {
   const toSkyId = cityToSkyId(to);
 
   if (!fromSkyId || !toSkyId) {
-    const msg = `Oops, I had trouble finding "${from}" or “
-
-${to}". Could you try major cities like London, Paris, or Dubai? 😊`;
+    const msg = `Oops, I had trouble finding "${from}" or "${to}". Could you try major cities like London, Paris, or Dubai? 😊`;
     session.history.push({ role: "assistant", content: msg });
     return res.json({ reply: msg });
   }
