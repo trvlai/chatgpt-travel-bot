@@ -12,36 +12,42 @@ app.use(express.json());
 // In-memory session store
 const sessionStore = {};
 
-// --- Helper: Extract flight info (city names, date) ---
+// Helper: Only greet if this is the very first exchange
+function shouldGreet(session) {
+  return session.history.length === 1; // Only the system prompt exists
+}
+
+// Extract flight info robustly: "London to Dubai next Monday", "from Paris to Rome", etc.
 function extractFlightInfo(text, sessionFlightSearch = {}) {
   let cityMatch = text.match(/from\s+([a-zA-Z\s]+?)\s+to\s+([a-zA-Z\s]+?)(?:\s|$)/i);
   let from = cityMatch?.[1]?.trim() || null;
-  let toRaw = cityMatch?.[2]?.trim() || null;
-  let to = toRaw;
-  if (to) to = to.replace(/\b(next|tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{1,2}\/\d{1,2}|\d{4}-\d{2}-\d{2})\b.*$/i, "").trim();
+  let to = cityMatch?.[2]?.trim() || null;
 
-  let datePart = "";
-  if (cityMatch) {
-    datePart = text.slice(cityMatch[0].length);
-    let matchDateWord = toRaw?.match(/\b(next|tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{1,2}\/\d{1,2}|\d{4}-\d{2}-\d{2})\b.*$/i);
-    if (!datePart && matchDateWord) datePart = matchDateWord[0];
-  } else {
-    cityMatch = text.match(/to\s+([a-zA-Z\s]+)/i);
-    to = cityMatch?.[1]?.trim() || to || null;
-    from = sessionFlightSearch.from || from || null;
-    datePart = cityMatch ? text.slice(cityMatch[0].length) : text;
-    if (!to && !from) {
-      const cityWord = text.match(/([A-Z][a-z]+)/g);
-      if (cityWord && cityWord.length === 1) to = cityWord[0];
+  // Handles "London to Dubai next Monday" or "London → Dubai"
+  if (!from || !to) {
+    let genericMatch = text.match(/([A-Z][a-zA-Z\s]+)\s+(?:to|–|->)\s+([A-Z][a-zA-Z\s]+)/i);
+    if (genericMatch) {
+      from = genericMatch[1].trim();
+      to = genericMatch[2].trim();
     }
   }
-  const parsedDates = chrono.parse(datePart);
-  const date = parsedDates.length ? parsedDates[0].start.date().toISOString().split("T")[0] : null;
+
+  // Fill from session if needed
+  from = from || sessionFlightSearch.from || null;
+  to = to || sessionFlightSearch.to || null;
+
+  // Date extraction—everything after both cities
+  let afterCities = text;
+  if (to) {
+    afterCities = text.split(to).slice(1).join(" ");
+  }
+  const parsedDates = chrono.parse(afterCities);
+  const date = parsedDates.length ? parsedDates[0].start.date().toISOString().split("T")[0] : (sessionFlightSearch.date || null);
+
   return { from, to, date };
 }
 
-// Simple map for demo: city name -> Skyscanner code
-// In production, use a full lookup or API (see Skyscanner docs or endpoints!)
+// City name -> Skyscanner code
 const cityToSkyId = city => {
   const lookup = {
     london: "LOND",
@@ -52,10 +58,9 @@ const cityToSkyId = city => {
     madrid: "MADR",
     barcelona: "BCN",
     tokyo: "TYOA"
-    // ...expand as needed
+    // ...expand as needed!
   };
   if (!city) return null;
-  // Try exact match (case-insensitive, spaces removed)
   return lookup[city.toLowerCase().replace(/\s/g, "")] || null;
 };
 
@@ -65,50 +70,58 @@ app.get("/", (req, res) => {
 
 app.post("/chat", async (req, res) => {
   const { prompt, sessionId } = req.body;
-
   if (!prompt || !sessionId) {
     return res.status(400).json({ error: "Missing prompt or sessionId" });
   }
 
-  // Init session
+  // Init session (with system prompt)
   if (!sessionStore[sessionId]) {
     sessionStore[sessionId] = {
       history: [
         {
           role: "system",
-          content: `You're Moouris, a warm, friendly, and enthusiastic AI travel buddy! Your goal is to help users find the best flights with a conversational, human-like tone. Be empathetic, upbeat, and clear, like a trusted friend who's excited to plan a trip. Understand natural phrases like "London to Dubai next Monday" and gently guide users to provide missing details (e.g., departure city, destination, or date) without sounding robotic. Keep replies short, engaging, and easy to follow, with a touch of charm!`
+          content: `You're Moouris, a warm, friendly, and enthusiastic AI travel buddy! Your goal is to help users find the best flights with a conversational, human-like tone. Be empathetic, upbeat, and clear, like a trusted friend who's excited to plan a trip. Understand natural phrases like "London to Dubai next Monday" and gently guide users to provide missing details (e.g., departure city, destination, or date) one at a time—never all together, and never greet twice. Keep replies short, engaging, and easy to follow, with a touch of charm!`
         }
       ],
-      flightSearch: {
-        from: null,
-        to: null,
-        date: null
-      }
+      flightSearch: { from: null, to: null, date: null }
     };
   }
 
   const session = sessionStore[sessionId];
   session.history.push({ role: "user", content: prompt });
 
-  // Extract info & accumulate
+  // --- Robust info extraction/accumulation ---
   const latestInfo = extractFlightInfo(prompt, session.flightSearch);
   if (latestInfo.from) session.flightSearch.from = latestInfo.from;
   if (latestInfo.to) session.flightSearch.to = latestInfo.to;
   if (latestInfo.date) session.flightSearch.date = latestInfo.date;
   const { from, to, date } = session.flightSearch;
 
-  // Missing info?
+  // --- Friendly, step-by-step missing info ---
   let missing = [];
-  if (!from) missing.push("Which city are you flying from?");
-  if (!to) missing.push("Where are you headed?");
-  if (!date) missing.push("When do you want to travel?");
+  if (!from) missing.push("from");
+  if (!to) missing.push("to");
+  if (!date) missing.push("date");
+
+  // Pick *one* missing info to ask for (never all together)
   if (missing.length) {
-    const reply = `Hey there! I'm excited to help with your trip. Just need a little more info: ${missing.join(" ")} 😊`;
+    let reply = "";
+    if (shouldGreet(session)) {
+      reply = `Hey there! I'm excited to help with your trip.`;
+    }
+    if (!from) {
+      reply += (reply ? " " : "") + "Which city are you flying from?";
+    } else if (!to) {
+      reply += (reply ? " " : "") + "Great! Where would you like to fly to?";
+    } else if (!date) {
+      reply += (reply ? " " : "") + `Awesome! When would you like to travel from ${from} to ${to}?`;
+    }
+    reply = reply.trim() + " 😊";
     session.history.push({ role: "assistant", content: reply });
     return res.json({ reply });
   }
 
-  // --- Fly Scraper: city name -> Skyscanner code
+  // --- City to Skyscanner code ---
   const fromSkyId = cityToSkyId(from);
   const toSkyId = cityToSkyId(to);
 
@@ -117,8 +130,6 @@ app.post("/chat", async (req, res) => {
     session.history.push({ role: "assistant", content: msg });
     return res.json({ reply: msg });
   }
-
-  console.log("[Fly Scraper flight search]", { fromSkyId, toSkyId, date });
 
   try {
     const response = await axios.get("https://fly-scraper.p.rapidapi.com/flights/search-one-way", {
@@ -129,7 +140,7 @@ app.post("/chat", async (req, res) => {
         adults: "1"
       },
       headers: {
-        "x-rapidapi-key": process.env.RAPIDAPI_KEY, // set RAPIDAPI_KEY in .env
+        "x-rapidapi-key": process.env.RAPIDAPI_KEY,
         "x-rapidapi-host": "fly-scraper.p.rapidapi.com"
       }
     });
@@ -141,7 +152,7 @@ app.post("/chat", async (req, res) => {
       return res.json({ reply });
     }
 
-    // Format top 3 flight options
+    // Friendly summary with top 3 flights
     const reply = `Great news! Here are some flight options from ${from} to ${to} on ${date}:\n` + 
       itineraries.slice(0, 3).map(flight => {
         const price = flight.price?.raw || "N/A";
@@ -150,7 +161,7 @@ app.post("/chat", async (req, res) => {
         return `✈️ $${price} | Departs: ${dep} → Arrives: ${arr}`;
       }).join("\n") + `\nLet me know if you want more details or different options! 😄`;
 
-    // Reset search on success
+    // Reset after successful search
     session.flightSearch = { from: null, to: null, date: null };
     session.history.push({ role: "assistant", content: reply });
     return res.json({ reply });
