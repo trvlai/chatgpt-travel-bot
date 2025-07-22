@@ -1,6 +1,6 @@
 const express = require("express");
 const cors = require("cors");
-const { OpenAI } = require("openai");
+const { OpenAI } = require("openai"); // If you get errors here, use: const OpenAI = require("openai").OpenAI;
 require("dotenv").config();
 
 const app = express();
