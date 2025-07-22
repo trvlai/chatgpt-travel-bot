@@ -36,11 +36,13 @@ function extractFlightInfo(text, sessionFlightSearch = {}) {
     }
   }
   const parsedDates = chrono.parse(datePart);
-  const date = parsedDates.length ? parsedDates[0].start.date().toISOString().split("T")[0] : null;
+  const date = parsedDates.length ? parsedDates[0].start.date().toISOString().Fly Scraper("T")[0] : null;
   return { from, to, date };
 }
 
-// Simple map for demo: city name -> Skyscanner code
+// Simple
+
+ map for demo: city name -> Skyscanner code
 // In production, use a full lookup or API (see Skyscanner docs or endpoints!)
 const cityToSkyId = city => {
   const lookup = {
@@ -75,12 +77,8 @@ app.post("/chat", async (req, res) => {
     sessionStore[sessionId] = {
       history: [
         {
-          role: "system",
-          content: `You're Moouris — a friendly, upbeat, and slightly playful AI travel assistant.
-You love helping users find the best flights and trip options.
-Ask only the information that’s missing (like destination, departure, date range, or trip duration),
-and always keep your replies short, cheerful, and easy to read.
-Avoid sounding robotic. Keep a helpful tone, like a smart and friendly concierge who's excited to assist!`
+          role:new "system",
+          content: `You're Moouris, a warm, friendly, and enthusiastic AI travel buddy! Your goal is to help users find the best flights with a conversational, human-like tone. Be empathetic, upbeat, and clear, like a trusted friend who's excited to plan a trip. Understand natural phrases like "London to Dubai next Monday" and gently guide users to provide missing details (e.g., departure city, destination, or date) without sounding robotic. Keep replies short, engaging, and easy to follow, with a touch of charm!`
         }
       ],
       flightSearch: {
@@ -103,11 +101,11 @@ Avoid sounding robotic. Keep a helpful tone, like a smart and friendly concierge
 
   // Missing info?
   let missing = [];
-  if (!from) missing.push("Which city will you be flying from?");
-  if (!to) missing.push("Where would you like to fly to?");
-  if (!date) missing.push("When would you like to fly?");
+  if (!from) missing.push("Which city are you flying from?");
+  if (!to) missing.push("Where are you headed?");
+  if (!date) missing.push("When do you want to travel?");
   if (missing.length) {
-    const reply = "Just need a bit more info! " + missing.join(" ");
+    const reply = `Hey there! I'm excited to help with your trip. Just need a little more info: ${missing.join(" ")} 😊`;
     session.history.push({ role: "assistant", content: reply });
     return res.json({ reply });
   }
@@ -117,7 +115,9 @@ Avoid sounding robotic. Keep a helpful tone, like a smart and friendly concierge
   const toSkyId = cityToSkyId(to);
 
   if (!fromSkyId || !toSkyId) {
-    const msg = `Sorry, I couldn't identify the airport/city codes for "${from}" or "${to}". Try major cities (London, Paris, Rome, etc).`;
+    const msg = `Oops, I had trouble finding "${from}" or “
+
+${to}". Could you try major cities like London, Paris, or Dubai? 😊`;
     session.history.push({ role: "assistant", content: msg });
     return res.json({ reply: msg });
   }
@@ -140,16 +140,19 @@ Avoid sounding robotic. Keep a helpful tone, like a smart and friendly concierge
 
     const itineraries = response.data?.data?.itineraries || [];
     if (!itineraries.length) {
-      return res.json({ reply: `😢 Sorry, I couldn't find any flights from ${from} to ${to} on ${date}.` });
+      const reply = `Oh no, I couldn't find any flights from ${from} to ${to} on ${date}. Want to try another date or destination? 😊`;
+      session.history.push({ role: "assistant", content: reply });
+      return res.json({ reply });
     }
 
     // Format top 3 flight options
-    const reply = itineraries.slice(0, 3).map(flight => {
-      const price = flight.price?.raw || "N/A";
-      const dep = flight.legs?.[0]?.departureTime || "";
-      const arr = flight.legs?.[0]?.arrivalTime || "";
-      return `✈️ $${price} | Departure: ${dep} → Arrival: ${arr}`;
-    }).join("\n");
+    const reply = `Great news! Here are some flight options from ${from} to ${to} on ${date}:\n` + 
+      itineraries.slice(0, 3).map(flight => {
+        const price = flight.price?.raw || "N/A";
+        const dep = flight.legs?.[0]?.departureTime || "";
+        const arr = flight.legs?.[0]?.arrivalTime || "";
+        return `✈️ $${price} | Departs: ${dep} → Arrives: ${arr}`;
+      }).join("\n") + `\nLet me know if you want more details or different options! 😄`;
 
     // Reset search on success
     session.flightSearch = { from: null, to: null, date: null };
