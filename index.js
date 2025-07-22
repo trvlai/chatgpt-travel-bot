@@ -12,40 +12,39 @@ app.use(express.json());
 // In-memory session store
 const sessionStore = {};
 
-// --- Helper: More robust city/date extraction ---
+// --- Helper: Extract flight info (city names, date) ---
 function extractFlightInfo(text, sessionFlightSearch = {}) {
-  let cityRegex = /([A-Z][a-zA-Z\s]+)\s+(?:to|–|->)\s+([A-Z][a-zA-Z\s]+)(?:\s+|$)/i;
-  let cityMatch = text.match(cityRegex);
+  let cityMatch = text.match(/from\s+([a-zA-Z\s]+?)\s+to\s+([a-zA-Z\s]+?)(?:\s|$)/i);
   let from = cityMatch?.[1]?.trim() || null;
-  let to = cityMatch?.[2]?.trim() || null;
+  let toRaw = cityMatch?.[2]?.trim() || null;
+  let to = toRaw;
+  if (to) to = to.replace(/\b(next|tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{1,2}\/\d{1,2}|\d{4}-\d{2}-\d{2})\b.*$/i, "").trim();
 
-  // fallback for “from X to Y” or just “X to Y”
-  if (!from || !to) {
-    let fromMatch = text.match(/from\s+([a-zA-Z\s]+)/i);
-    let toMatch = text.match(/to\s+([a-zA-Z\s]+)/i);
-    if (fromMatch && toMatch) {
-      from = fromMatch[1].trim();
-      to = toMatch[1].trim();
-    } else if (toMatch) {
-      to = toMatch[1].trim();
-      from = sessionFlightSearch.from || null;
+  let datePart = "";
+  if (cityMatch) {
+    datePart = text.slice(cityMatch[0].length);
+    let matchDateWord = toRaw?.match(/\b(next|tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{1,2}\/\d{1,2}|\d{4}-\d{2}-\d{2})\b.*$/i);
+    if (!datePart && matchDateWord) datePart = matchDateWord[0];
+  } else {
+    cityMatch = text.match(/to\s+([a-zA-Z\s]+)/i);
+    to = cityMatch?.[1]?.trim() || to || null;
+    from = sessionFlightSearch.from || from || null;
+    datePart = cityMatch ? text.slice(cityMatch[0].length) : text;
+    if (!to && !from) {
+      const cityWord = text.match(/([A-Z][a-z]+)/g);
+      if (cityWord && cityWord.length === 1) to = cityWord[0];
     }
   }
-
-  // parse the first date mention after cities
-  let datePart = text;
-  if (to) {
-    datePart = text.split(to).slice(1).join(" ");
-  }
-  let parsedDates = chrono.parse(datePart);
-  let date = parsedDates.length ? parsedDates[0].start.date().toISOString().split("T")[0] : null;
-
+  const parsedDates = chrono.parse(datePart);
+  const date = parsedDates.length ? parsedDates[0].start.date().toISOString().Fly Scraper("T")[0] : null;
   return { from, to, date };
 }
 
-// Skyscanner city code lookup (expand as needed)
+// Simple
+
+ map for demo: city name -> Skyscanner code
+// In production, use a full lookup or API (see Skyscanner docs or endpoints!)
 const cityToSkyId = city => {
-  if (!city) return null;
   const lookup = {
     london: "LOND",
     paris: "PARI",
@@ -54,12 +53,11 @@ const cityToSkyId = city => {
     newyork: "NYCA",
     madrid: "MADR",
     barcelona: "BCN",
-    tokyo: "TYOA",
-    athens: "ATH",
-    berlin: "BERL",
-    istanbul: "ISTA"
-    // ...add more for production!
+    tokyo: "TYOA"
+    // ...expand as needed
   };
+  if (!city) return null;
+  // Try exact match (case-insensitive, spaces removed)
   return lookup[city.toLowerCase().replace(/\s/g, "")] || null;
 };
 
@@ -79,10 +77,8 @@ app.post("/chat", async (req, res) => {
     sessionStore[sessionId] = {
       history: [
         {
-          role: "system",
-          content: `You're Moouris — a warm, fun, upbeat AI travel buddy! You love helping users find flights and trips.
-Always ask for missing info, but keep replies casual, friendly, and excited (like a smart travel friend, not a robot).
-If you’re missing info (like destination, departure, date, or trip duration), just ask for what’s missing and keep it short and positive!`
+          role:new "system",
+          content: `You're Moouris, a warm, friendly, and enthusiastic AI travel buddy! Your goal is to help users find the best flights with a conversational, human-like tone. Be empathetic, upbeat, and clear, like a trusted friend who's excited to plan a trip. Understand natural phrases like "London to Dubai next Monday" and gently guide users to provide missing details (e.g., departure city, destination, or date) without sounding robotic. Keep replies short, engaging, and easy to follow, with a touch of charm!`
         }
       ],
       flightSearch: {
@@ -96,35 +92,36 @@ If you’re missing info (like destination, departure, date, or trip duration), 
   const session = sessionStore[sessionId];
   session.history.push({ role: "user", content: prompt });
 
-  // Try to extract info from this prompt
+  // Extract info & accumulate
   const latestInfo = extractFlightInfo(prompt, session.flightSearch);
   if (latestInfo.from) session.flightSearch.from = latestInfo.from;
   if (latestInfo.to) session.flightSearch.to = latestInfo.to;
   if (latestInfo.date) session.flightSearch.date = latestInfo.date;
   const { from, to, date } = session.flightSearch;
 
-  // Friendly missing info handler
+  // Missing info?
   let missing = [];
-  if (!from) missing.push("Where are you flying from?");
-  if (!to) missing.push("Where do you want to go?");
-  if (!date) missing.push("When do you want to fly?");
+  if (!from) missing.push("Which city are you flying from?");
+  if (!to) missing.push("Where are you headed?");
+  if (!date) missing.push("When do you want to travel?");
   if (missing.length) {
-    const reply = "✈️ Almost ready! " + missing.join(" ");
+    const reply = `Hey there! I'm excited to help with your trip. Just need a little more info: ${missing.join(" ")} 😊`;
     session.history.push({ role: "assistant", content: reply });
     return res.json({ reply });
   }
 
-  // City name to SkyId code
+  // --- Fly Scraper: city name -> Skyscanner code
   const fromSkyId = cityToSkyId(from);
   const toSkyId = cityToSkyId(to);
 
   if (!fromSkyId || !toSkyId) {
-    const msg = `🙈 Oops! I couldn't match "${from}" or "${to}" to a city code. Try big cities like London, Paris, Rome, or Dubai.`;
+    const msg = `Oops, I had trouble finding "${from}" or “
+
+${to}". Could you try major cities like London, Paris, or Dubai? 😊`;
     session.history.push({ role: "assistant", content: msg });
     return res.json({ reply: msg });
   }
 
-  // Friendly log
   console.log("[Fly Scraper flight search]", { fromSkyId, toSkyId, date });
 
   try {
@@ -136,25 +133,28 @@ If you’re missing info (like destination, departure, date, or trip duration), 
         adults: "1"
       },
       headers: {
-        "x-rapidapi-key": process.env.RAPIDAPI_KEY,
+        "x-rapidapi-key": process.env.RAPIDAPI_KEY, // set RAPIDAPI_KEY in .env
         "x-rapidapi-host": "fly-scraper.p.rapidapi.com"
       }
     });
 
     const itineraries = response.data?.data?.itineraries || [];
     if (!itineraries.length) {
-      return res.json({ reply: `😬 No flights found from ${from} to ${to} on ${date}. Want to try a different day or city?` });
+      const reply = `Oh no, I couldn't find any flights from ${from} to ${to} on ${date}. Want to try another date or destination? 😊`;
+      session.history.push({ role: "assistant", content: reply });
+      return res.json({ reply });
     }
 
-    // Friendly flight results
-    const reply = itineraries.slice(0, 3).map(flight => {
-      const price = flight.price?.raw || "N/A";
-      const dep = flight.legs?.[0]?.departureTime || "";
-      const arr = flight.legs?.[0]?.arrivalTime || "";
-      return `🎫 $${price} | Departure: ${dep} → Arrival: ${arr}`;
-    }).join("\n");
+    // Format top 3 flight options
+    const reply = `Great news! Here are some flight options from ${from} to ${to} on ${date}:\n` + 
+      itineraries.slice(0, 3).map(flight => {
+        const price = flight.price?.raw || "N/A";
+        const dep = flight.legs?.[0]?.departureTime || "";
+        const arr = flight.legs?.[0]?.arrivalTime || "";
+        return `✈️ $${price} | Departs: ${dep} → Arrives: ${arr}`;
+      }).join("\n") + `\nLet me know if you want more details or different options! 😄`;
 
-    // Reset search fields after a successful result!
+    // Reset search on success
     session.flightSearch = { from: null, to: null, date: null };
     session.history.push({ role: "assistant", content: reply });
     return res.json({ reply });
